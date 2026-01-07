@@ -15,15 +15,28 @@
             },
             colors: {
               primary: {
-                50: '#f0fdfa',
-                100: '#ccfbf1',
-                500: '#14b8a6', // Teal
-                600: '#0d9488',
-                700: '#0f766e',
-                900: '#134e4a',
+                DEFAULT: '#0f766e', // Teal 700
+                hover: '#115e59',   // Teal 800
+                light: '#f0fdfa',   // Teal 50
+                focus: '#0d9488',   // Teal 600
               },
-              accent: {
-                500: '#f59e0b', // Amber
+              danger: {
+                DEFAULT: '#b91c1c', // Red 700
+                hover: '#991b1b',   // Red 800
+                light: '#fef2f2',   // Red 50
+              },
+              // Enforce Slate for neutrals
+              slate: {
+                50: '#f8fafc',
+                100: '#f1f5f9',
+                200: '#e2e8f0',
+                300: '#cbd5e1',
+                400: '#94a3b8',
+                500: '#64748b',
+                600: '#475569',
+                700: '#334155',
+                800: '#1e293b',
+                900: '#0f172a',
               }
             }
           }
@@ -34,6 +47,7 @@
       body {
         background-color: #f8fafc;
         -webkit-tap-highlight-color: transparent;
+        color: #1e293b; /* slate-800 default */
       }
       /* Hide scrollbar for clean mobile look but allow scroll */
       .no-scrollbar::-webkit-scrollbar {
@@ -43,15 +57,48 @@
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
+      
+      /* Input Reset */
+      input, select, textarea {
+        background-color: #ffffff;
+        border-color: #cbd5e1; /* slate-300 */
+        color: #1e293b; /* slate-800 */
+      }
+      input:focus, select:focus, textarea:focus {
+        border-color: #0f766e; /* primary */
+        outline: none;
+        box-shadow: 0 0 0 1px #0f766e;
+      }
+      input::placeholder, textarea::placeholder {
+        color: #94a3b8; /* slate-400 */
+      }
+
+      /* Hide Number Input Spinners */
+      /* Chrome, Safari, Edge, Opera */
+      input::-webkit-outer-spin-button,
+      input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      /* Firefox */
+      input[type=number] {
+        -moz-appearance: textfield;
+      }
     </style>
   <script type="importmap">
 {
   "imports": {
-    "react-router-dom": "https://esm.sh/react-router-dom@^7.11.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react-router-dom": "https://esm.sh/react-router-dom@6.22.3?deps=react@18.2.0,react-dom@18.2.0",
+    "lucide-react": "https://esm.sh/lucide-react@0.363.0?deps=react@18.2.0",
+    "react": "https://esm.sh/react@18.2.0",
+    "react/": "https://esm.sh/react@18.2.0/",
+    "react-dom": "https://esm.sh/react-dom@18.2.0?deps=react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
+    "firebase/analytics": "https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics.js",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "firebase/": "https://esm.sh/firebase@^12.7.0/"
   }
 }
 </script>

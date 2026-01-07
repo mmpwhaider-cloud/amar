@@ -1,12 +1,15 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { 
     Supplier, Product, PurchaseInvoice, SaleInvoice, Payment, 
-    SupplierStats, PurchaseItem, SaleItem
+    SupplierStats
 } from '../types';
-import { loadData, saveData, AppData } from '../services/storage';
+import { AppData } from '../services/storage'; 
+import { api } from '../services/api';
 import { generateId } from '../constants';
 
 interface StoreContextType extends AppData {
+    isLoading: boolean;
+    error: string | null;
     // Actions
     addSupplier: (name: string, phone?: string, notes?: string) => void;
     deleteSupplier: (id: string) => Promise<void>;
@@ -38,19 +41,43 @@ export const useStore = () => {
 };
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [data, setData] = useState<AppData>(loadData);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [data, setData] = useState<AppData>({
+        suppliers: [],
+        products: [],
+        purchaseInvoices: [],
+        saleInvoices: [],
+        payments: []
+    });
 
-    useEffect(() => {
-        saveData(data);
-    }, [data]);
+    const handleError = (e: any) => {
+        console.error("App Error:", e);
+        const msg = e.message || 'An unknown error occurred';
+        setError(msg);
+    };
 
+    const loadFromApi = async () => {
+        setIsLoading(true);
+        setError(null);
+        try {
+            const fetchedData = await api.fetchAll();
+            setData(fetchedData as unknown as AppData);
+        } catch (e: any) {
+            handleError(e);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // Initial Load
     useEffect(() => {
-        const handleStorageChange = () => setData(loadData());
-        window.addEventListener('storage', handleStorageChange);
-        return () => window.removeEventListener('storage', handleStorageChange);
+        loadFromApi();
     }, []);
 
-    const refreshData = () => setData(loadData());
+    const refreshData = async () => {
+        loadFromApi();
+    };
 
     // --- Suppliers ---
     const addSupplier = (name: string, phone?: string, notes?: string) => {
@@ -62,6 +89,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             createdAt: Date.now()
         };
         setData(prev => ({ ...prev, suppliers: [newSupplier, ...prev.suppliers] }));
+        api.addSupplier(newSupplier).catch(e => {
+            handleError(e);
+            refreshData(); // Revert/Refresh on error
+        });
     };
 
     const deleteSupplier = async (id: string) => {
@@ -77,42 +108,30 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...prev,
             suppliers: prev.suppliers.filter(s => s.id !== id)
         }));
+        api.deleteSupplier(id).catch(e => {
+            handleError(e);
+            refreshData();
+        });
     };
 
-    // --- Core Logic Helpers ---
-    
-    // Helper: Apply Purchase Effects (Increase Stock)
+    // --- Helpers for Optimistic Updates ---
     const applyPurchaseEffects = (products: Product[], invoice: PurchaseInvoice): Product[] => {
         let updatedProducts = [...products];
-        
         invoice.items.forEach(item => {
             const existingIndex = updatedProducts.findIndex(p => p.id === item.productId);
-            
             if (existingIndex > -1) {
                 const p = updatedProducts[existingIndex];
                 updatedProducts[existingIndex] = {
                     ...p,
                     quantityInStock: p.quantityInStock + item.quantity,
                     lastPurchasePrice: item.purchasePrice,
-                    supplierId: invoice.supplierId // Update supplier link
+                    supplierId: invoice.supplierId
                 };
-            } else {
-                // Should have been created before, but safety check
-                updatedProducts.push({
-                    id: item.productId,
-                    name: item.productNameSnapshot,
-                    supplierId: invoice.supplierId,
-                    lastPurchasePrice: item.purchasePrice,
-                    salePrice: 0, // Will be set if not provided
-                    quantityInStock: item.quantity,
-                    quantitySold: 0
-                });
             }
         });
         return updatedProducts;
     };
 
-    // Helper: Revert Purchase Effects (Decrease Stock)
     const revertPurchaseEffects = (products: Product[], invoice: PurchaseInvoice): Product[] => {
         let updatedProducts = [...products];
         invoice.items.forEach(item => {
@@ -127,7 +146,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return updatedProducts;
     };
 
-    // Helper: Apply Sale Effects (Decrease Stock, Increase Sold)
     const applySaleEffects = (products: Product[], invoice: SaleInvoice): Product[] => {
         let updatedProducts = [...products];
         invoice.items.forEach(item => {
@@ -143,7 +161,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return updatedProducts;
     };
 
-    // Helper: Revert Sale Effects (Increase Stock, Decrease Sold)
     const revertSaleEffects = (products: Product[], invoice: SaleInvoice): Product[] => {
         let updatedProducts = [...products];
         invoice.items.forEach(item => {
@@ -164,38 +181,58 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setData(prev => {
             let nextProducts = [...prev.products];
             let nextInvoices = [...prev.purchaseInvoices];
-            
-            // 1. Ensure all products exist
+            const isEdit = nextInvoices.some(inv => inv.id === invoice.id);
+
+            // 1. Handle New Products (Must exist in DB before Invoice Items reference them)
+            const newProductsToCreate: Product[] = [];
             invoice.items.forEach(item => {
-                if (!nextProducts.find(p => p.id === item.productId)) {
-                    // Create new product if strictly not found (though UI handles ID generation)
-                    nextProducts.push({
+                const exists = nextProducts.find(p => p.id === item.productId);
+                if (!exists) {
+                    const newProd: Product = {
                         id: item.productId,
                         name: item.productNameSnapshot,
                         supplierId: invoice.supplierId,
                         lastPurchasePrice: item.purchasePrice,
                         salePrice: 0,
-                        quantityInStock: 0,
+                        quantityInStock: 0, // Will be incremented by effect
                         quantitySold: 0
-                    });
+                    };
+                    nextProducts.push(newProd);
+                    newProductsToCreate.push(newProd);
+                    // Add to API explicitly
+                    api.addProduct(newProd).catch(e => console.error("API Error (Background)", e));
                 }
             });
 
-            // 2. Check if Edit or New
-            const existingIndex = nextInvoices.findIndex(inv => inv.id === invoice.id);
-            if (existingIndex > -1) {
-                // Revert old effects
-                const oldInvoice = nextInvoices[existingIndex];
-                nextProducts = revertPurchaseEffects(nextProducts, oldInvoice);
-                // Update list
-                nextInvoices[existingIndex] = invoice;
+            // 2. Edit Logic
+            if (isEdit) {
+                 const oldInvoice = nextInvoices.find(inv => inv.id === invoice.id);
+                 if (oldInvoice) {
+                     nextProducts = revertPurchaseEffects(nextProducts, oldInvoice);
+                     api.deletePurchaseInvoice(invoice.id, oldInvoice.items).then(() => {
+                         api.addPurchaseInvoice(invoice);
+                     }).catch(e => {
+                        handleError(e);
+                        refreshData();
+                     });
+                 }
+                 nextInvoices = nextInvoices.map(inv => inv.id === invoice.id ? invoice : inv);
             } else {
-                // New
                 nextInvoices = [invoice, ...nextInvoices];
+                // New Invoice
+                api.addPurchaseInvoice(invoice).catch(e => {
+                    handleError(e);
+                    refreshData();
+                });
             }
 
-            // 3. Apply new effects
+            // 3. Apply Stock Effects
             nextProducts = applyPurchaseEffects(nextProducts, invoice);
+
+            // 4. Update Inventory Stats
+            const involvedIds = invoice.items.map(i => i.productId);
+            const productsToUpdate = nextProducts.filter(p => involvedIds.includes(p.id));
+            api.updateProducts(productsToUpdate).catch(e => console.error("API Error (Background)", e));
 
             return {
                 ...prev,
@@ -210,9 +247,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const invoice = prev.purchaseInvoices.find(inv => inv.id === id);
             if (!invoice) return prev;
 
-            // Revert effects
             const nextProducts = revertPurchaseEffects([...prev.products], invoice);
             
+            const involvedIds = invoice.items.map(i => i.productId);
+            const productsToUpdate = nextProducts.filter(p => involvedIds.includes(p.id));
+
+            api.deletePurchaseInvoice(id, invoice.items).catch(e => {
+                handleError(e);
+                refreshData();
+            });
+            api.updateProducts(productsToUpdate).catch(e => console.error("API Error (Background)", e));
+
             return {
                 ...prev,
                 products: nextProducts,
@@ -226,24 +271,34 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setData(prev => {
             let nextProducts = [...prev.products];
             let nextInvoices = [...prev.saleInvoices];
+            const isEdit = nextInvoices.some(inv => inv.id === invoice.id);
 
-            // 1. Check stock availability (Only for NEW items or delta)
-            // Ideally, the UI handles validation, but here is a safety net.
-            // For editing, it's complex because we must consider the "revert" first. 
-            // We assume the caller validated logic or we allow negative stock if forcing edit.
-            
-            // 2. Check if Edit
-            const existingIndex = nextInvoices.findIndex(inv => inv.id === invoice.id);
-            if (existingIndex > -1) {
-                const oldInvoice = nextInvoices[existingIndex];
-                nextProducts = revertSaleEffects(nextProducts, oldInvoice);
-                nextInvoices[existingIndex] = invoice;
+            if (isEdit) {
+                const oldInvoice = nextInvoices.find(inv => inv.id === invoice.id);
+                if (oldInvoice) {
+                    nextProducts = revertSaleEffects(nextProducts, oldInvoice);
+                    api.deleteSaleInvoice(invoice.id).then(() => {
+                        api.addSaleInvoice(invoice);
+                    }).catch(e => {
+                        handleError(e);
+                        refreshData();
+                    });
+                }
+                nextInvoices = nextInvoices.map(inv => inv.id === invoice.id ? invoice : inv);
             } else {
                 nextInvoices = [invoice, ...nextInvoices];
+                api.addSaleInvoice(invoice).catch(e => {
+                    handleError(e);
+                    refreshData();
+                });
             }
 
-            // 3. Apply New Effects
             nextProducts = applySaleEffects(nextProducts, invoice);
+
+            const involvedIds = invoice.items.map(i => i.productId);
+            const productsToUpdate = nextProducts.filter(p => involvedIds.includes(p.id));
+
+            api.updateProducts(productsToUpdate).catch(e => console.error("API Error (Background)", e));
 
             return {
                 ...prev,
@@ -259,6 +314,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (!invoice) return prev;
 
             const nextProducts = revertSaleEffects([...prev.products], invoice);
+
+            const involvedIds = invoice.items.map(i => i.productId);
+            const productsToUpdate = nextProducts.filter(p => involvedIds.includes(p.id));
+
+            api.deleteSaleInvoice(id).catch(e => {
+                handleError(e);
+                refreshData();
+            });
+            api.updateProducts(productsToUpdate).catch(e => console.error("API Error (Background)", e));
             
             return {
                 ...prev,
@@ -275,25 +339,46 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             let nextPayments = [...prev.payments];
             if (idx > -1) {
                 nextPayments[idx] = payment;
+                api.editPayment(payment).catch(e => { 
+                    handleError(e); 
+                    refreshData(); 
+                });
             } else {
                 nextPayments = [payment, ...nextPayments];
+                api.addPayment(payment).catch(e => { 
+                    handleError(e); 
+                    refreshData(); 
+                });
             }
             return { ...prev, payments: nextPayments };
         });
     };
 
     const deletePayment = (id: string) => {
-        setData(prev => ({
-            ...prev,
-            payments: prev.payments.filter(p => p.id !== id)
-        }));
+        setData(prev => {
+            api.deletePayment(id).catch(e => { 
+                handleError(e); 
+                refreshData(); 
+            });
+            return {
+                ...prev,
+                payments: prev.payments.filter(p => p.id !== id)
+            };
+        });
     };
 
     const updateProductPrice = (productId: string, newPrice: number) => {
-        setData(prev => ({
-            ...prev,
-            products: prev.products.map(p => p.id === productId ? { ...p, salePrice: newPrice } : p)
-        }));
+        setData(prev => {
+            const updatedProducts = prev.products.map(p => {
+                if (p.id === productId) {
+                    const updated = { ...p, salePrice: newPrice };
+                    api.updateProducts([updated]).catch(e => console.error("API Error (Background)", e));
+                    return updated;
+                }
+                return p;
+            });
+            return { ...prev, products: updatedProducts };
+        });
     };
 
     // --- Calculations ---
@@ -304,7 +389,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const supplierPayments = data.payments.filter(p => p.supplierId === supplierId);
         const totalPaid = supplierPayments.reduce((sum, p) => sum + p.amount, 0);
 
-        // Calculate sold value: iterate all sales, check product ownership
         let totalSoldValue = 0;
         data.saleInvoices.forEach(inv => {
             inv.items.forEach(item => {
@@ -326,6 +410,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return (
         <StoreContext.Provider value={{
             ...data,
+            isLoading,
+            error,
             addSupplier,
             deleteSupplier,
             savePurchaseInvoice,
